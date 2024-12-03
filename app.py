@@ -1,19 +1,63 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_login import LoginManager, login_user, logout_user, login_required
+from service.database import create_user, get_user, verify_password
 from service.elastic import Elastic
+from models import db, User
+
 app = Flask(__name__)
 CORS(app)
+app.config['SECRET_KEY'] = 'your_secret_key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db.init_app(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+@app.before_first_request
+def create_tables():
+    db.create_all()
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+    if get_user(username):
+        return jsonify({'error': 'Username already exists'}), 409
+    create_user(username, password)
+    return jsonify({'message': 'Registration successful'}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+    user = get_user(username)
+    if not user or not user.check_password(password):
+        return jsonify({'error': 'Invalid username or password'}), 401
+    login_user(user)
+    return jsonify({'message': 'Login successful'}), 200
+
+@app.route('/logout', methods=['GET'])
+@login_required
+def logout():
+    logout_user()
+    return jsonify({'message': 'Logout successful'}), 200
+
 elastic = Elastic()
-def parse_filters(filter_string):
-    """Parses the filter string into a dictionary of filters."""
-    filters = {}
-    if filter_string:
-        for filter_item in filter_string.split(','):
-            key, value = filter_item.split(':', 1)
-            filters[key] = value
-    return filters
 
 @app.route('/searchPatents', methods=['GET'])
+@login_required
 def search_patents():
     query_params = request.args.to_dict(flat=True)
     query_params['page'] = int(query_params.get('page', 1))
@@ -42,7 +86,9 @@ def search_patents():
     query_params['query'] = query
     result = elastic.search_patents(**query_params)
     return jsonify({'total': result['hits']['total']['value'], 'items': result['hits']['hits']})
+
 @app.route('/getPatentById', methods=['GET'])
+@login_required
 def get_patent_by_id():
     patent_id = request.args.get('_id')
     if not patent_id:
@@ -51,6 +97,7 @@ def get_patent_by_id():
     return jsonify(result)
 
 @app.route('/countPatentsInfos', methods=['GET'])
+@login_required
 def count_patents_infos():
     query_params = request.args.to_dict(flat=True)
     result = elastic.count_patents_infos(**query_params)
